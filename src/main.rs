@@ -144,12 +144,18 @@ impl App {
             .iter()
             .map(|entry| {
                 let name = entry.file_name().to_string_lossy().to_string();
-                let display = if entry.path().is_dir() {
+                let is_dir = entry.path().is_dir();
+                let display = if is_dir {
                     format!("{}/", name)
                 } else {
                     name
                 };
-                ListItem::new(display)
+                let style = if is_dir {
+                    Style::default().fg(Color::Blue)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(display).style(style)
             })
             .collect()
     }
