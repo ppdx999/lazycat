@@ -7,6 +7,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     prelude::CrosstermBackend,
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Terminal,
 };
@@ -16,12 +17,20 @@ use std::{
     io::{self, stdout},
     path::PathBuf,
 };
+use syntect::{
+    easy::HighlightLines,
+    highlighting::{self, ThemeSet},
+    parsing::SyntaxSet,
+    util::LinesWithEndings,
+};
 
 struct App {
     current_dir: PathBuf,
     entries: Vec<DirEntry>,
     selected: usize,
-    preview_content: String,
+    preview_lines: Vec<Line<'static>>,
+    syntax_set: SyntaxSet,
+    theme_set: ThemeSet,
 }
 
 impl App {
@@ -31,7 +40,9 @@ impl App {
             current_dir,
             entries: Vec::new(),
             selected: 0,
-            preview_content: String::new(),
+            preview_lines: Vec::new(),
+            syntax_set: SyntaxSet::load_defaults_newlines(),
+            theme_set: ThemeSet::load_defaults(),
         };
         app.refresh_entries()?;
         Ok(app)
@@ -57,42 +68,91 @@ impl App {
         Ok(())
     }
 
+    fn syntect_to_ratatui_color(color: highlighting::Color) -> Color {
+        Color::Rgb(color.r, color.g, color.b)
+    }
+
+    fn highlight_content(&self, content: &str, path: &PathBuf) -> Vec<Line<'static>> {
+        let syntax = self
+            .syntax_set
+            .find_syntax_for_file(path)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+
+        let theme = &self.theme_set.themes["base16-ocean.dark"];
+        let mut highlighter = HighlightLines::new(syntax, theme);
+
+        let mut lines = Vec::new();
+        for line in LinesWithEndings::from(content) {
+            let ranges = highlighter
+                .highlight_line(line, &self.syntax_set)
+                .unwrap_or_default();
+
+            let spans: Vec<Span<'static>> = ranges
+                .into_iter()
+                .map(|(style, text)| {
+                    let fg = Self::syntect_to_ratatui_color(style.foreground);
+                    Span::styled(text.to_string(), Style::default().fg(fg))
+                })
+                .collect();
+
+            lines.push(Line::from(spans));
+        }
+        lines
+    }
+
     fn update_preview(&mut self) {
         if let Some(entry) = self.entries.get(self.selected) {
             let path = entry.path();
             if path.is_dir() {
                 match fs::read_dir(&path) {
                     Ok(entries) => {
-                        let mut items: Vec<String> = entries
+                        let mut items: Vec<(String, bool)> = entries
                             .filter_map(|e| e.ok())
                             .map(|e| {
                                 let name = e.file_name().to_string_lossy().to_string();
-                                if e.path().is_dir() {
+                                let is_dir = e.path().is_dir();
+                                (name, is_dir)
+                            })
+                            .collect();
+                        items.sort_by(|a, b| a.0.cmp(&b.0));
+
+                        self.preview_lines = items
+                            .into_iter()
+                            .map(|(name, is_dir)| {
+                                let display = if is_dir {
                                     format!("{}/", name)
                                 } else {
                                     name
-                                }
+                                };
+                                let style = if is_dir {
+                                    Style::default().fg(Color::Blue)
+                                } else {
+                                    Style::default()
+                                };
+                                Line::from(Span::styled(display, style))
                             })
                             .collect();
-                        items.sort();
-                        self.preview_content = items.join("\n");
                     }
                     Err(e) => {
-                        self.preview_content = format!("Cannot read directory: {}", e);
+                        self.preview_lines =
+                            vec![Line::from(format!("Cannot read directory: {}", e))];
                     }
                 }
             } else {
                 match fs::read_to_string(&path) {
                     Ok(content) => {
-                        self.preview_content = content.chars().take(10000).collect();
+                        let truncated: String = content.chars().take(50000).collect();
+                        self.preview_lines = self.highlight_content(&truncated, &path);
                     }
                     Err(_) => {
-                        self.preview_content = "[Binary file or cannot read]".to_string();
+                        self.preview_lines = vec![Line::from("[Binary file or cannot read]")];
                     }
                 }
             }
         } else {
-            self.preview_content.clear();
+            self.preview_lines.clear();
         }
     }
 
@@ -127,11 +187,7 @@ impl App {
             let old_dir = self.current_dir.clone();
             self.current_dir = parent.to_path_buf();
             self.refresh_entries()?;
-            if let Some(idx) = self
-                .entries
-                .iter()
-                .position(|e| e.path() == old_dir)
-            {
+            if let Some(idx) = self.entries.iter().position(|e| e.path() == old_dir) {
                 self.selected = idx;
                 self.update_preview();
             }
@@ -203,7 +259,7 @@ fn main() -> io::Result<()> {
                 "Preview".to_string()
             };
 
-            let preview = Paragraph::new(app.preview_content.as_str())
+            let preview = Paragraph::new(app.preview_lines.clone())
                 .block(Block::default().title(preview_title).borders(Borders::ALL))
                 .wrap(Wrap { trim: false });
 
