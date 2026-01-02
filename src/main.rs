@@ -8,7 +8,7 @@ use ratatui::{
     prelude::CrosstermBackend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Terminal,
 };
 use std::{
@@ -29,6 +29,7 @@ struct App {
     entries: Vec<DirEntry>,
     selected: usize,
     preview_lines: Vec<Line<'static>>,
+    preview_scroll: u16,
     syntax_set: SyntaxSet,
     theme_set: ThemeSet,
 }
@@ -41,6 +42,7 @@ impl App {
             entries: Vec::new(),
             selected: 0,
             preview_lines: Vec::new(),
+            preview_scroll: 0,
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme_set: ThemeSet::load_defaults(),
         };
@@ -103,6 +105,7 @@ impl App {
     }
 
     fn update_preview(&mut self) {
+        self.preview_scroll = 0;
         if let Some(entry) = self.entries.get(self.selected) {
             let path = entry.path();
             if path.is_dir() {
@@ -195,6 +198,15 @@ impl App {
         Ok(())
     }
 
+    fn scroll_preview_down(&mut self, amount: u16) {
+        let max_scroll = (self.preview_lines.len() as u16).saturating_sub(1);
+        self.preview_scroll = (self.preview_scroll + amount).min(max_scroll);
+    }
+
+    fn scroll_preview_up(&mut self, amount: u16) {
+        self.preview_scroll = self.preview_scroll.saturating_sub(amount);
+    }
+
     fn get_list_items(&self) -> Vec<ListItem<'_>> {
         self.entries
             .iter()
@@ -261,7 +273,7 @@ fn main() -> io::Result<()> {
 
             let preview = Paragraph::new(app.preview_lines.clone())
                 .block(Block::default().title(preview_title).borders(Borders::ALL))
-                .wrap(Wrap { trim: false });
+                .scroll((app.preview_scroll, 0));
 
             frame.render_widget(preview, chunks[1]);
         })?;
@@ -279,6 +291,8 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('h') | KeyCode::Left => {
                             app.go_parent()?;
                         }
+                        KeyCode::Char('n') => app.scroll_preview_down(15),
+                        KeyCode::Char('p') => app.scroll_preview_up(15),
                         _ => {}
                     }
                 }
